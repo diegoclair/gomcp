@@ -1,5 +1,24 @@
 # gomcp
 
+<p align="center">
+ <b>A typed, opinionated MCP server layer for your Go backend</b><br>
+    <a href="https://github.com/diegoclair/gomcp/tags" alt="GitHub tag">
+     <img src="https://img.shields.io/github/tag/diegoclair/gomcp.svg" />
+    </a>
+    <a href='https://coveralls.io/github/diegoclair/gomcp?branch=main'>
+     <img src='https://coveralls.io/repos/github/diegoclair/gomcp/badge.svg?branch=main' alt='Coverage Status' />
+    </a>
+    <a href="https://github.com/diegoclair/gomcp/actions">
+     <img src="https://github.com/diegoclair/gomcp/actions/workflows/ci.yml/badge.svg" alt="build status">
+    </a>
+    <a href="https://github.com/diegoclair/gomcp/contributors" alt="Contributors">
+     <img src="https://img.shields.io/github/contributors/diegoclair/gomcp" />
+    </a>
+    <a href="https://opensource.org/licenses/MIT">
+     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" />
+    </a>
+</p>
+
 A Model Context Protocol server for a Go backend, built from typed handlers
 and served over stateless Streamable HTTP behind a bearer token. A thin,
 opinionated layer over the official
