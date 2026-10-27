@@ -8,12 +8,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/diegoclair/gomcp"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -68,6 +71,8 @@ func newTestServer(t *testing.T, rec *recorder, serverOpts []gomcp.Option, handl
 			return echoOut{}, errors.New("pq: connection refused")
 		},
 		gomcp.Destructive(false), gomcp.Idempotent())
+	panics := gomcp.Tool("panics", "Always panics.",
+		func(ctx context.Context, in echoIn) (echoOut, error) { panic("boom") }, gomcp.ReadOnly())
 	write := gomcp.Tool("write", "Overwrites something.",
 		func(ctx context.Context, in echoIn) (echoOut, error) { return echoOut{Text: in.Text}, nil })
 
@@ -87,7 +92,7 @@ func newTestServer(t *testing.T, rec *recorder, serverOpts []gomcp.Option, handl
 			rec.mu.Unlock()
 		}),
 	}, serverOpts...)
-	server := gomcp.NewServer("test", "v0.0.1", []gomcp.ToolDef{echo, fail, write}, opts...)
+	server := gomcp.NewServer("test", "v0.0.1", []gomcp.ToolDef{echo, fail, write, panics}, opts...)
 
 	if handlerOpts.Verifier == nil {
 		handlerOpts.Verifier = rec.verify
@@ -167,8 +172,8 @@ func listTools(t *testing.T) map[string]*mcp.Tool {
 	for _, tool := range res.Tools {
 		byName[tool.Name] = tool
 	}
-	if len(byName) != 3 {
-		t.Fatalf("got %d tools, want 3", len(byName))
+	if len(byName) != 4 {
+		t.Fatalf("got %d tools, want 4", len(byName))
 	}
 	return byName
 }
@@ -234,6 +239,24 @@ func TestCallerIdentityReachesHooksAndHandler(t *testing.T) {
 	}
 	if len(rec.postErrs) != 1 || rec.postErrs[0] != nil {
 		t.Errorf("PostInvoke errors = %v, want one nil", rec.postErrs)
+	}
+}
+
+func TestInstructionsReachTheClientOnInitialize(t *testing.T) {
+	const instructions = "A product is sold through one listing per marketplace account."
+	ts := newTestServer(t, &recorder{}, []gomcp.Option{gomcp.WithInstructions(instructions)}, gomcp.HandlerOptions{})
+
+	got := mustConnect(t, ts.URL).InitializeResult().Instructions
+	if got != instructions {
+		t.Errorf("instructions = %q, want %q", got, instructions)
+	}
+}
+
+func TestNoInstructionsByDefault(t *testing.T) {
+	ts := newTestServer(t, &recorder{}, nil, gomcp.HandlerOptions{})
+
+	if got := mustConnect(t, ts.URL).InitializeResult().Instructions; got != "" {
+		t.Errorf("instructions = %q, want none", got)
 	}
 }
 
@@ -438,5 +461,106 @@ func TestDuplicateToolNamePanics(t *testing.T) {
 func TestUserIDOutsideCall(t *testing.T) {
 	if id, ok := gomcp.UserID(context.Background()); ok || id != "" {
 		t.Errorf("UserID outside a call = (%q, %v), want (\"\", false)", id, ok)
+	}
+}
+
+func TestPanickingToolBecomesAToolErrorAndTheServerKeepsServing(t *testing.T) {
+	rec := &recorder{}
+	ts := newTestServer(t, rec, nil, gomcp.HandlerOptions{})
+	session := mustConnect(t, ts.URL)
+
+	res := callTool(t, session, "panics", "x")
+	if !res.IsError {
+		t.Fatalf("a panic must answer a tool error, got %s", textOf(res))
+	}
+	rec.mu.Lock()
+	last := rec.postErrs[len(rec.postErrs)-1]
+	rec.mu.Unlock()
+	if !errors.Is(last, gomcp.ErrToolPanicked) || !strings.Contains(last.Error(), "boom") {
+		t.Errorf("PostInvoke error = %v, want the panic wrapped in ErrToolPanicked", last)
+	}
+
+	if res := callTool(t, session, "echo", "still here"); res.IsError {
+		t.Errorf("the server stopped serving after a panic: %s", textOf(res))
+	}
+}
+
+type shade string
+
+type paintIn struct {
+	Shade shade `json:"shade" jsonschema:"the shade to paint with"`
+}
+
+func shadeSchemas() map[reflect.Type]*jsonschema.Schema {
+	return map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[shade](): {Type: "string", Enum: []any{"light", "dark"}},
+	}
+}
+
+func connectInMemory(t *testing.T, server *mcp.Server) *mcp.ClientSession {
+	t.Helper()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := server.Connect(context.Background(), serverTransport, nil); err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v0"}, nil).
+		Connect(context.Background(), clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func TestTypeSchemasPutTheEnumOnTheInputAndTheSDKRefusesAnyOtherValueBeforeTheHandler(t *testing.T) {
+	var reached atomic.Bool
+	paint := gomcp.Tool("paint", "Paints.", func(_ context.Context, in paintIn) (echoOut, error) {
+		reached.Store(true)
+		return echoOut{Text: string(in.Shade)}, nil
+	}, gomcp.ReadOnly())
+	session := connectInMemory(t, gomcp.NewServer("test", "v0.0.1", []gomcp.ToolDef{paint},
+		gomcp.WithTypeSchemas(shadeSchemas())))
+
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	encoded, err := json.Marshal(listed.Tools[0].InputSchema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"enum":["light","dark"]`) {
+		t.Errorf("input schema = %s, want the shade enum", encoded)
+	}
+
+	refused, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "paint",
+		Arguments: map[string]any{"shade": "purple"}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !refused.IsError || reached.Load() {
+		t.Errorf("an out-of-enum value must be refused before the handler; isError=%v reached=%v",
+			refused.IsError, reached.Load())
+	}
+
+	taken, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "paint",
+		Arguments: map[string]any{"shade": "dark"}})
+	if err != nil || taken.IsError || !reached.Load() {
+		t.Errorf("a value in the enum must reach the handler; err=%v result=%s", err, textOf(taken))
+	}
+}
+
+func TestWithoutTypeSchemasTheInputSchemaIsTheInferredOne(t *testing.T) {
+	paint := gomcp.Tool("paint", "Paints.", func(_ context.Context, in paintIn) (echoOut, error) {
+		return echoOut{}, nil
+	}, gomcp.ReadOnly())
+	listed, err := connectInMemory(t, gomcp.NewServer("test", "v0.0.1", []gomcp.ToolDef{paint})).
+		ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	encoded, _ := json.Marshal(listed.Tools[0].InputSchema)
+	if strings.Contains(string(encoded), "enum") {
+		t.Errorf("input schema = %s, want no enum", encoded)
 	}
 }

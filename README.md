@@ -125,6 +125,27 @@ func verifyToken(ctx context.Context, token string, _ *http.Request) (*auth.Toke
 }
 ```
 
+## Server instructions
+
+`WithInstructions` sets the text a client receives once, in the initialize
+result: the vocabulary and conventions every tool shares, which no single
+tool's description should repeat.
+
+## Closed sets of values
+
+`WithTypeSchemas` maps a Go type to the schema every tool input field of that
+type gets, instead of the inferred one. Give the field a named type and build
+its enum from the code that owns the values; the SDK then refuses any other
+value before the handler runs.
+
+```go
+type marketplace string
+
+gomcp.NewServer("shop", "v1", tools, gomcp.WithTypeSchemas(map[reflect.Type]*jsonschema.Schema{
+	reflect.TypeFor[marketplace](): {Type: "string", Enum: []any{"north", "south"}},
+}))
+```
+
 ## What a failed call shows
 
 A handler error becomes a tool result with `isError: true`, so the model reads
@@ -143,6 +164,10 @@ func showOnlyBusinessErrors(err error) string {
 
 `PostInvoke` always receives the original error, before the policy rewrites
 it, which is where you log it.
+
+A panic in a tool or in `PreInvoke` is recovered: it becomes an error wrapping
+`ErrToolPanicked`, with its stack, so the call fails and the server keeps
+serving.
 
 ## Serving it
 

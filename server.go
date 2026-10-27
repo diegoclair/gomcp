@@ -5,7 +5,9 @@ package gomcp
 import (
 	"context"
 	"fmt"
+	"reflect"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -29,9 +31,11 @@ type ErrorPolicy func(err error) string
 type Option func(*config)
 
 type config struct {
-	preInvoke   PreInvoke
-	postInvoke  PostInvoke
-	errorPolicy ErrorPolicy
+	preInvoke    PreInvoke
+	postInvoke   PostInvoke
+	errorPolicy  ErrorPolicy
+	instructions string
+	typeSchemas  map[reflect.Type]*jsonschema.Schema
 }
 
 func WithPreInvoke(hook PreInvoke) Option {
@@ -49,6 +53,17 @@ func WithErrorPolicy(policy ErrorPolicy) Option {
 
 func showErrorMessage(err error) string { return err.Error() }
 
+// Sent once in the initialize result, for what no single tool's description can carry.
+func WithInstructions(instructions string) Option {
+	return func(c *config) { c.instructions = instructions }
+}
+
+// Lets a closed set of values the caller owns reach the client as an enum on every input field of that type, which
+// the SDK then enforces before the handler runs.
+func WithTypeSchemas(schemas map[reflect.Type]*jsonschema.Schema) Option {
+	return func(c *config) { c.typeSchemas = schemas }
+}
+
 // NewServer panics on a duplicate tool name or a type whose schema cannot be
 // inferred, both of which are wiring mistakes caught at boot.
 func NewServer(name, version string, tools []ToolDef, opts ...Option) *mcp.Server {
@@ -56,7 +71,8 @@ func NewServer(name, version string, tools []ToolDef, opts ...Option) *mcp.Serve
 	for _, opt := range opts {
 		opt(cfg)
 	}
-	server := mcp.NewServer(&mcp.Implementation{Name: name, Version: version}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: name, Version: version},
+		&mcp.ServerOptions{Instructions: cfg.instructions})
 	registered := make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		toolName := tool.toolName()
