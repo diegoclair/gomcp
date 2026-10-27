@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -562,5 +563,131 @@ func TestWithoutTypeSchemasTheInputSchemaIsTheInferredOne(t *testing.T) {
 	encoded, _ := json.Marshal(listed.Tools[0].InputSchema)
 	if strings.Contains(string(encoded), "enum") {
 		t.Errorf("input schema = %s, want no enum", encoded)
+	}
+}
+
+type receiptLine struct {
+	SKU    string `json:"sku" jsonschema:"the stock keeping unit"`
+	Amount int64  `json:"amount"`
+}
+
+type receiptOut struct {
+	Total  int64                  `json:"total"`
+	Lines  []receiptLine          `json:"lines"`
+	ByTax  map[string]receiptLine `json:"byTax"`
+	Nested *receiptLine           `json:"nested,omitzero"`
+}
+
+func listOutputSchema(t *testing.T, opts ...gomcp.Option) *jsonschema.Schema {
+	t.Helper()
+	receipt := gomcp.Tool("receipt", "Returns a receipt.", func(context.Context, echoIn) (receiptOut, error) {
+		return receiptOut{}, nil
+	}, gomcp.ReadOnly())
+	listed, err := connectInMemory(t, gomcp.NewServer("test", "v0.0.1", []gomcp.ToolDef{receipt}, opts...)).
+		ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	encoded, err := json.Marshal(listed.Tools[0].OutputSchema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(encoded, &schema); err != nil {
+		t.Fatalf("unmarshal schema %s: %v", encoded, err)
+	}
+	return &schema
+}
+
+func closedOrRequiredKeywords(node any, path string) []string {
+	var found []string
+	switch value := node.(type) {
+	case map[string]any:
+		if additional, ok := value["additionalProperties"]; ok && additional == false {
+			found = append(found, path+".additionalProperties")
+		}
+		if _, ok := value["required"]; ok {
+			found = append(found, path+".required")
+		}
+		for key, child := range value {
+			found = append(found, closedOrRequiredKeywords(child, path+"."+key)...)
+		}
+	case []any:
+		for i, child := range value {
+			found = append(found, closedOrRequiredKeywords(child, fmt.Sprintf("%s[%d]", path, i))...)
+		}
+	}
+	return found
+}
+
+func schemaAsJSON(t *testing.T, schema *jsonschema.Schema) any {
+	t.Helper()
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	var generic any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	return generic
+}
+
+func TestOpenOutputSchemasCloseNoObjectAndRequireNoFieldSoACachedSchemaSurvivesAFieldAddedOrRemoved(t *testing.T) {
+	schema := listOutputSchema(t, gomcp.WithOpenOutputSchemas())
+	if found := closedOrRequiredKeywords(schemaAsJSON(t, schema), "$"); len(found) > 0 {
+		t.Errorf("published output schema still closes or requires: %v", found)
+	}
+	if schema.Properties["lines"].Items.Properties["sku"].Description != "the stock keeping unit" {
+		t.Errorf("descriptions must survive: %+v", schema.Properties["lines"].Items.Properties["sku"])
+	}
+	if schema.Properties["total"].Type != "integer" || schema.Properties["byTax"].AdditionalProperties == nil {
+		t.Errorf("types and a map's value schema must survive: total=%+v byTax=%+v",
+			schema.Properties["total"], schema.Properties["byTax"])
+	}
+
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	grown := map[string]any{
+		"total":   int64(10),
+		"addedAt": "root",
+		"lines":   []any{map[string]any{"sku": "a", "amount": int64(1), "addedAt": "array item"}},
+		"byTax":   map[string]any{"icms": map[string]any{"sku": "b", "amount": int64(2), "addedAt": "map value"}},
+		"nested":  map[string]any{"sku": "c", "amount": int64(3), "addedAt": "nested object"},
+	}
+	if err := resolved.Validate(grown); err != nil {
+		t.Errorf("an output that gained a field at every level must validate: %v", err)
+	}
+	if err := resolved.Validate(map[string]any{"lines": []any{map[string]any{"sku": "a"}}}); err != nil {
+		t.Errorf("an output that lost a field must validate: %v", err)
+	}
+	if err := resolved.Validate(map[string]any{"total": "ten"}); err == nil {
+		t.Error("a field of the wrong type must still be refused")
+	}
+}
+
+func TestWithoutOpenOutputSchemasTheOutputSchemaIsTheInferredClosedOne(t *testing.T) {
+	found := closedOrRequiredKeywords(schemaAsJSON(t, listOutputSchema(t)), "$")
+	if !slices.Contains(found, "$.additionalProperties") || !slices.Contains(found, "$.required") {
+		t.Errorf("default output schema must stay the SDK's inferred one, found %v", found)
+	}
+}
+
+func TestOpenOutputSchemasKeepTheSDKAnsweringANilPointerOutputWithItsZeroValue(t *testing.T) {
+	nothing := gomcp.Tool("nothing", "Returns nothing.", func(context.Context, echoIn) (*receiptLine, error) {
+		return nil, nil
+	}, gomcp.ReadOnly())
+	session := connectInMemory(t, gomcp.NewServer("test", "v0.0.1", []gomcp.ToolDef{nothing},
+		gomcp.WithOpenOutputSchemas()))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "nothing",
+		Arguments: map[string]any{"text": "x"}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	var line receiptLine
+	if res.IsError || json.Unmarshal([]byte(textOf(res)), &line) != nil || line != (receiptLine{}) {
+		t.Errorf("result = %s (isError=%v), want the zero receipt line", textOf(res), res.IsError)
 	}
 }

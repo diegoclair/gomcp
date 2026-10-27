@@ -61,7 +61,7 @@ type typedTool[In, Out any] struct {
 func (t *typedTool[In, Out]) toolName() string { return t.tool.Name }
 
 func (t *typedTool[In, Out]) register(server *mcp.Server, cfg *config) {
-	mcp.AddTool(server, t.toolWithInputSchema(cfg), func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+	mcp.AddTool(server, t.toolWithSchemas(cfg), func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
 		call := Call{Tool: t.tool.Name, Input: in}
 		if req.Extra != nil && req.Extra.TokenInfo != nil {
 			call.Caller = req.Extra.TokenInfo
@@ -97,23 +97,45 @@ func (t *typedTool[In, Out]) invoke(ctx context.Context, call Call, in In, cfg *
 	return t.handler(ctx, in)
 }
 
-// Without type schemas the SDK infers the input schema itself.
-func (t *typedTool[In, Out]) toolWithInputSchema(cfg *config) *mcp.Tool {
-	if len(cfg.typeSchemas) == 0 {
-		return t.tool
-	}
-	inputType := reflect.TypeFor[In]()
-	if inputType == reflect.TypeFor[any]() {
-		return t.tool
-	}
-	if inputType.Kind() == reflect.Pointer {
-		inputType = inputType.Elem()
-	}
-	schema, err := jsonschema.ForType(inputType, &jsonschema.ForOptions{TypeSchemas: cfg.typeSchemas})
-	if err != nil {
-		panic(fmt.Sprintf("gomcp: tool %q: input schema: %v", t.tool.Name, err))
-	}
+func (t *typedTool[In, Out]) toolWithSchemas(cfg *config) *mcp.Tool {
 	tool := *t.tool
-	tool.InputSchema = schema
+	if len(cfg.typeSchemas) > 0 && reflect.TypeFor[In]() != reflect.TypeFor[any]() {
+		tool.InputSchema = t.mustInferSchema("input", reflect.TypeFor[In](), &jsonschema.ForOptions{TypeSchemas: cfg.typeSchemas})
+	}
+	if cfg.openOutputSchemas && reflect.TypeFor[Out]() != reflect.TypeFor[any]() {
+		output := t.mustInferSchema("output", reflect.TypeFor[Out](), &jsonschema.ForOptions{})
+		openObjects(output)
+		tool.OutputSchema = output
+	}
 	return &tool
+}
+
+func (t *typedTool[In, Out]) mustInferSchema(side string, goType reflect.Type, opts *jsonschema.ForOptions) *jsonschema.Schema {
+	if goType.Kind() == reflect.Pointer {
+		goType = goType.Elem()
+	}
+	schema, err := jsonschema.ForType(goType, opts)
+	if err != nil {
+		panic(fmt.Sprintf("gomcp: tool %q: %s schema: %v", t.tool.Name, side, err))
+	}
+	return schema
+}
+
+func openObjects(schema *jsonschema.Schema) {
+	if schema == nil {
+		return
+	}
+	schema.Required = nil
+	if isFalseSchema(schema.AdditionalProperties) {
+		schema.AdditionalProperties = nil
+	}
+	openObjects(schema.AdditionalProperties)
+	openObjects(schema.Items)
+	for _, property := range schema.Properties {
+		openObjects(property)
+	}
+}
+
+func isFalseSchema(schema *jsonschema.Schema) bool {
+	return schema != nil && reflect.DeepEqual(*schema, jsonschema.Schema{Not: &jsonschema.Schema{}})
 }

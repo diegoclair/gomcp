@@ -3,6 +3,17 @@
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.0] - 2026-10-27
+
+### Added
+
+- `WithOpenOutputSchemas`: every typed tool's output schema is published with
+  no `additionalProperties: false` and no `required` at any level, keeping
+  types and descriptions. A client caches the output schema when it connects
+  and validates `structuredContent` against it, so a field added after that
+  was refused until it reconnected; `required` goes too because a field later
+  removed fails a cached schema the same way.
+
 ## [v0.2.0] - 2026-10-27
 
 ### Added

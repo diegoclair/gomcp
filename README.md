@@ -146,6 +146,19 @@ gomcp.NewServer("shop", "v1", tools, gomcp.WithTypeSchemas(map[reflect.Type]*jso
 }))
 ```
 
+## Output schemas that survive a deploy
+
+A client caches each tool's output schema when it connects and validates the
+result's `structuredContent` against it. The inferred schema is closed
+(`additionalProperties: false`, every non-`omitempty` field required), so a
+field added or removed in a deploy is refused by every client connected before
+it, until it reconnects. `WithOpenOutputSchemas` publishes the output schemas
+open at every level, keeping types and descriptions:
+
+```go
+gomcp.NewServer("shop", "v1", tools, gomcp.WithOpenOutputSchemas())
+```
+
 ## What a failed call shows
 
 A handler error becomes a tool result with `isError: true`, so the model reads

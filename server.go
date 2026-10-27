@@ -31,11 +31,12 @@ type ErrorPolicy func(err error) string
 type Option func(*config)
 
 type config struct {
-	preInvoke    PreInvoke
-	postInvoke   PostInvoke
-	errorPolicy  ErrorPolicy
-	instructions string
-	typeSchemas  map[reflect.Type]*jsonschema.Schema
+	preInvoke         PreInvoke
+	postInvoke        PostInvoke
+	errorPolicy       ErrorPolicy
+	instructions      string
+	typeSchemas       map[reflect.Type]*jsonschema.Schema
+	openOutputSchemas bool
 }
 
 func WithPreInvoke(hook PreInvoke) Option {
@@ -62,6 +63,12 @@ func WithInstructions(instructions string) Option {
 // the SDK then enforces before the handler runs.
 func WithTypeSchemas(schemas map[reflect.Type]*jsonschema.Schema) Option {
 	return func(c *config) { c.typeSchemas = schemas }
+}
+
+// Publishes every typed tool's output schema with no required field and no closed object, so a client that cached
+// it before a deploy still accepts an output that gained or lost a field.
+func WithOpenOutputSchemas() Option {
+	return func(c *config) { c.openOutputSchemas = true }
 }
 
 // NewServer panics on a duplicate tool name or a type whose schema cannot be
