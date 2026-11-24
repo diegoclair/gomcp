@@ -36,11 +36,16 @@ func Idempotent() ToolOption {
 	return func(a *mcp.ToolAnnotations) { a.IdempotentHint = true }
 }
 
+// OpenWorld(true) marks a tool that reaches a system the caller does not control; without it the world is closed.
+func OpenWorld(openWorld bool) ToolOption {
+	return func(a *mcp.ToolAnnotations) { a.OpenWorldHint = &openWorld }
+}
+
 func Title(title string) ToolOption {
 	return func(a *mcp.ToolAnnotations) { a.Title = title }
 }
 
-// Every tool declares a closed world: it acts on the caller's own data only.
+// A tool declares a closed world unless OpenWorld says otherwise.
 func Tool[In, Out any](name, description string, handler func(ctx context.Context, in In) (Out, error), opts ...ToolOption) ToolDef {
 	openWorld := false
 	annotations := &mcp.ToolAnnotations{OpenWorldHint: &openWorld}

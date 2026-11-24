@@ -75,13 +75,15 @@ runs, and the output becomes the result's `structuredContent`.
 | Option | Hint | Use it for |
 |---|---|---|
 | `ReadOnly()` | `readOnlyHint: true` | reads, previews |
-| `Destructive(false)` | `destructiveHint: false` | creates that only add |
+| `Destructive(false)` | `destructiveHint: false` | creates that only add, and reads that must state it |
 | `Destructive(true)` or nothing | `destructiveHint` unset, which MCP reads as true | updates that overwrite |
 | `Idempotent()` | `idempotentHint: true` | a create keyed by an idempotency key |
+| `OpenWorld(true)` | `openWorldHint: true` | a tool that reaches a system the caller does not control |
 | `Title(s)` | `title` | the name a client shows |
 
-Every tool declares `openWorldHint: false`: a tool built with gomcp acts on
-the caller's own data, never on an open world of external entities.
+A tool declares `openWorldHint: false` unless `OpenWorld(true)` says otherwise.
+A directory that requires every hint as an explicit boolean gets
+`destructiveHint` on a read only from `Destructive(false)`.
 
 ## Who is calling
 

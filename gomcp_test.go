@@ -207,6 +207,39 @@ func TestToolsDeclareClosedWorld(t *testing.T) {
 	}
 }
 
+func TestOpenWorldAndExplicitHintsReachTheClient(t *testing.T) {
+	reach := gomcp.Tool("reach", "Writes to a third party.",
+		func(context.Context, echoIn) (echoOut, error) { return echoOut{}, nil }, gomcp.OpenWorld(true))
+	look := gomcp.Tool("look", "Reads.",
+		func(context.Context, echoIn) (echoOut, error) { return echoOut{}, nil }, gomcp.ReadOnly(), gomcp.Destructive(false))
+	listed, err := connectInMemory(t, gomcp.NewServer("test", "v0.0.1", []gomcp.ToolDef{reach, look})).
+		ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	hints := map[string]map[string]any{}
+	for _, tool := range listed.Tools {
+		encoded, err := json.Marshal(tool.Annotations)
+		if err != nil {
+			t.Fatalf("marshal annotations: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("unmarshal annotations %s: %v", encoded, err)
+		}
+		hints[tool.Name] = decoded
+	}
+	if hints["reach"]["openWorldHint"] != true {
+		t.Errorf("reach annotations = %v, want openWorldHint true", hints["reach"])
+	}
+	want := map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
+	for key, value := range want {
+		if hints["look"][key] != value {
+			t.Errorf("look annotations = %v, want %s %v", hints["look"], key, value)
+		}
+	}
+}
+
 func TestCallerIdentityReachesHooksAndHandler(t *testing.T) {
 	rec := &recorder{}
 	ts := newTestServer(t, rec, nil, gomcp.HandlerOptions{})
